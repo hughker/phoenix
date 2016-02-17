@@ -1,4 +1,4 @@
-package phoenix
+package themekit
 
 import (
 	"bytes"
@@ -12,7 +12,14 @@ import (
 	"strings"
 )
 
-const ConfigurationFilename string = "config\\.yml"
+const ConfigurationFilename = "config\\.yml"
+
+var defaultRegexes = []*re.Regexp{
+	re.MustCompile(`\.git/*`),
+	re.MustCompile(`\.DS_Store`),
+}
+
+var defaultGlobs = []string{}
 
 type EventFilter struct {
 	filters []*re.Regexp
@@ -20,8 +27,8 @@ type EventFilter struct {
 }
 
 func NewEventFilter(rawPatterns []string) EventFilter {
-	filters := []*re.Regexp{}
-	globs := []string{}
+	filters := defaultRegexes
+	globs := defaultGlobs
 	for _, pat := range rawPatterns {
 		if len(pat) <= 0 {
 			continue
@@ -102,9 +109,11 @@ func (e EventFilter) MatchesFilter(event string) bool {
 
 func (e EventFilter) String() string {
 	buffer := bytes.NewBufferString(strings.Join(e.globs, "\n"))
+	buffer.WriteString("--- endglobs ---\n")
 	for _, rxp := range e.filters {
 		buffer.WriteString(fmt.Sprintf("%s\n", rxp))
 	}
+	buffer.WriteString("-- done --")
 	return buffer.String()
 }
 

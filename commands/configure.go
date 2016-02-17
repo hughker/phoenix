@@ -1,13 +1,14 @@
 package commands
 
 import (
-	"errors"
+	"bufio"
 	"fmt"
-	"github.com/csaunders/phoenix"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Shopify/themekit"
 )
 
 type ConfigurationOptions struct {
@@ -24,8 +25,8 @@ func (co ConfigurationOptions) areInvalid() bool {
 	return co.Domain == "" || co.AccessToken == ""
 }
 
-func (co ConfigurationOptions) defaultConfigurationOptions() phoenix.Configuration {
-	return phoenix.Configuration{
+func (co ConfigurationOptions) defaultConfigurationOptions() themekit.Configuration {
+	return themekit.Configuration{
 		Domain:      co.Domain,
 		AccessToken: co.AccessToken,
 		BucketSize:  co.BucketSize,
@@ -43,7 +44,7 @@ func (co ConfigurationOptions) configurationErrors() error {
 	}
 	if len(errs) > 0 {
 		fullPath := filepath.Join(co.Directory, "config.yml")
-		return errors.New(fmt.Sprintf("Cannot create %s!\nErrors:\n%s", fullPath, strings.Join(errs, "\n")))
+		return fmt.Errorf("Cannot create %s!\nErrors:\n%s", fullPath, strings.Join(errs, "\n"))
 	}
 	return nil
 }
@@ -54,9 +55,9 @@ func defaultOptions() ConfigurationOptions {
 		Domain:      "",
 		AccessToken: "",
 		Directory:   currentDir,
-		Environment: phoenix.DefaultEnvironment,
-		BucketSize:  phoenix.DefaultBucketSize,
-		RefillRate:  phoenix.DefaultRefillRate,
+		Environment: themekit.DefaultEnvironment,
+		BucketSize:  themekit.DefaultBucketSize,
+		RefillRate:  themekit.DefaultRefillRate,
 	}
 }
 
@@ -72,7 +73,7 @@ func ConfigureCommand(args map[string]interface{}) chan bool {
 	extractEventLog(&options.EventLog, args)
 
 	if options.areInvalid() {
-		phoenix.NotifyError(options.configurationErrors())
+		themekit.NotifyError(options.configurationErrors())
 	}
 
 	Configure(options)
@@ -86,49 +87,82 @@ func Configure(options ConfigurationOptions) {
 	AddConfiguration(options.Directory, options.Environment, config)
 }
 
-func AddConfiguration(dir, environment string, config phoenix.Configuration) {
+func AddConfiguration(dir, environment string, config themekit.Configuration) {
 	environmentLocation := filepath.Join(dir, "config.yml")
-	env := loadOrInitializeEnvironment(environmentLocation)
+	env, err := loadOrInitializeEnvironment(environmentLocation)
 	env.SetConfiguration(environment, config)
 
-	err := env.Save(environmentLocation)
+	err = env.Save(environmentLocation)
 	if err != nil {
-		phoenix.NotifyError(err)
+		themekit.NotifyError(err)
 	}
 }
 
-func MigrateConfigurationCommand(args map[string]interface{}) (done chan bool, log chan phoenix.ThemeEvent) {
+func MigrateConfigurationCommand(args map[string]interface{}) (done chan bool, log chan themekit.ThemeEvent) {
 	dir, _ := os.Getwd()
 	extractString(&dir, "directory", args)
 
 	MigrateConfiguration(dir)
 
 	done = make(chan bool)
-	log = make(chan phoenix.ThemeEvent)
+	log = make(chan themekit.ThemeEvent)
 	close(done)
 	close(log)
 	return
 }
 
-func MigrateConfiguration(dir string) {
+func PrepareConfigurationMigration(dir string) (func() bool, func() error) {
 	environmentLocation := filepath.Join(dir, "config.yml")
-	env := loadOrInitializeEnvironment(environmentLocation)
-	err := env.Save(environmentLocation)
+	env, err := loadOrInitializeEnvironment(environmentLocation)
 	if err != nil {
-		phoenix.NotifyError(err)
+		themekit.NotifyError(err)
+		return func() bool { return false }, func() error { return err }
 	}
+
+	confirmationFn := func() bool {
+		before, _ := ioutil.ReadFile(environmentLocation)
+		after := env.String()
+		fmt.Println(themekit.YellowText("Compare changes to configuration:"))
+		fmt.Println(themekit.YellowText("Before:\n"), themekit.GreenText(string(before)))
+		fmt.Println(themekit.YellowText("After:\n"), themekit.RedText(after))
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Println(themekit.YellowText("Does this look correct? (y/n)"))
+		text, _ := reader.ReadString('\n')
+		return strings.TrimSpace(text) == "y"
+	}
+
+	saveFn := func() error {
+		return env.Save(environmentLocation)
+	}
+	return confirmationFn, saveFn
 }
 
-func loadOrInitializeEnvironment(location string) phoenix.Environments {
-	contents, err := ioutil.ReadFile(location)
+func MigrateConfiguration(dir string) error {
+	environmentLocation := filepath.Join(dir, "config.yml")
+	env, err := loadOrInitializeEnvironment(environmentLocation)
 	if err != nil {
-		return phoenix.Environments{}
+		themekit.NotifyError(err)
+		return err
 	}
 
-	env, err := phoenix.LoadEnvironments(contents)
-	if err != nil || len(env) <= 0 {
-		conf, _ := phoenix.LoadConfiguration(contents)
-		env[phoenix.DefaultEnvironment] = conf
+	err = env.Save(environmentLocation)
+	return err
+}
+
+func loadOrInitializeEnvironment(location string) (themekit.Environments, error) {
+	contents, err := ioutil.ReadFile(location)
+	if err != nil {
+		return themekit.Environments{}, err
 	}
-	return env
+
+	env, err := themekit.LoadEnvironments(contents)
+	if (err != nil && canProcessWithError(err)) || len(env) <= 0 {
+		conf, _ := themekit.LoadConfiguration(contents)
+		env[themekit.DefaultEnvironment] = conf
+	}
+	return env, err
+}
+
+func canProcessWithError(e error) bool {
+	return strings.Contains(e.Error(), "YAML error") == false
 }

@@ -1,8 +1,9 @@
-package phoenix
+package themekit
 
 import (
 	"bytes"
 	"fmt"
+	"github.com/fatih/color"
 	"image"
 	"image/png"
 	"io/ioutil"
@@ -12,23 +13,16 @@ import (
 
 const MessageSeparator string = "\n----------------------------------------------------------------\n"
 
-func RedText(s string) string {
-	return fmt.Sprintf("\033[31m%s\033[0m", s)
-}
-
-func YellowText(s string) string {
-	return fmt.Sprintf("\033[33m%s\033[0m", s)
-}
-
-func BlueText(s string) string {
-	return fmt.Sprintf("\033[34m%s\033[0m", s)
-}
-
-func GreenText(s string) string {
-	return fmt.Sprintf("\033[32m%s\033[0m", s)
-}
+var RedText = color.New(color.FgRed).SprintFunc()
+var YellowText = color.New(color.FgYellow).SprintFunc()
+var BlueText = color.New(color.FgBlue).SprintFunc()
+var GreenText = color.New(color.FgGreen).SprintFunc()
 
 func TestFixture(name string) string {
+	return string(RawTestFixture(name))
+}
+
+func RawTestFixture(name string) []byte {
 	path := fmt.Sprintf("fixtures/%s.json", name)
 	file, err := os.Open(path)
 	defer file.Close()
@@ -39,7 +33,7 @@ func TestFixture(name string) string {
 	if err != nil {
 		log.Fatal(err)
 	}
-	return string(bytes)
+	return bytes
 }
 
 func BinaryTestData() []byte {

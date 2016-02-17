@@ -1,4 +1,4 @@
-package phoenix
+package themekit
 
 import (
 	"errors"
@@ -29,8 +29,8 @@ func (h HaltExecutionReporter) Report(e error) {
 }
 
 var reporter ErrorReporter = nullReporter{}
-var errorQueue chan error = make(chan error)
-var mutex *sync.Mutex = &sync.Mutex{}
+var errorQueue = make(chan error)
+var mutex = &sync.Mutex{}
 
 func synchronized(m *sync.Mutex, fn func()) {
 	m.Lock()
@@ -54,6 +54,12 @@ func SetErrorReporter(r ErrorReporter) {
 			}
 		}
 	}()
+}
+
+func NotifyErrorImmediately(err error) {
+	synchronized(mutex, func() {
+		reporter.Report(err)
+	})
 }
 
 func NotifyError(err error) {

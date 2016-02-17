@@ -1,1 +1,4 @@
 build/
+nanoc/
+.env
+tags

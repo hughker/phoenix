@@ -1,11 +1,15 @@
 package commands
 
 import (
-	"github.com/csaunders/phoenix"
+	"github.com/Shopify/themekit"
+	"github.com/Shopify/themekit/bucket"
+	"github.com/Shopify/themekit/theme"
+	"os"
 )
 
 type ReplaceOptions struct {
 	BasicOptions
+	Bucket *bucket.LeakyBucket
 }
 
 func ReplaceCommand(args map[string]interface{}) chan bool {
@@ -18,44 +22,59 @@ func ReplaceCommand(args map[string]interface{}) chan bool {
 }
 
 func Replace(options ReplaceOptions) chan bool {
-	events := make(chan phoenix.AssetEvent)
-	done, logs := options.Client.Process(events)
-	mergeEvents(options.getEventLog(), []chan phoenix.ThemeEvent{logs})
-
-	assets, errs := assetList(options.Client, options.Filenames)
-	go drainErrors(errs)
-	go removeAndUpload(assets, events)
-
+	rawEvents, throttledEvents := prepareChannel(options)
+	done, logs := options.Client.Process(throttledEvents)
+	mergeEvents(options.getEventLog(), []chan themekit.ThemeEvent{logs})
+	enqueueEvents(options.Client, options.Filenames, rawEvents)
 	return done
 }
 
-func assetList(client phoenix.ThemeClient, filenames []string) (chan phoenix.Asset, chan error) {
+func enqueueEvents(client themekit.ThemeClient, filenames []string, events chan themekit.AssetEvent) {
+	root, _ := os.Getwd()
 	if len(filenames) == 0 {
-		return client.AssetList()
+		go fullReplace(client.AssetListSync(), client.LocalAssets(root), events)
+		return
 	}
-
-	assets := make(chan phoenix.Asset)
-	errs := make(chan error)
-	close(errs)
 	go func() {
 		for _, filename := range filenames {
-			asset := phoenix.Asset{Key: filename}
-			assets <- asset
+			asset, err := theme.LoadAsset(root, filename)
+			if err == nil {
+				events <- themekit.NewUploadEvent(asset)
+			}
 		}
-		close(assets)
+		close(events)
 	}()
-	return assets, errs
 }
 
-func removeAndUpload(assets chan phoenix.Asset, assetEvents chan phoenix.AssetEvent) {
-	for {
-		asset, more := <-assets
-		if more {
-			assetEvents <- phoenix.NewRemovalEvent(asset)
-			assetEvents <- phoenix.NewUploadEvent(asset)
-		} else {
-			close(assetEvents)
-			return
+// fullReplace takes slices with assets both from the local filesystem and the remote server and translates them
+// into a suitable set of events that updates the remote site to the local state.
+func fullReplace(remoteAssets, localAssets []theme.Asset, events chan themekit.AssetEvent) {
+	assetsActions := map[string]themekit.AssetEvent{}
+	generateActions := func(assets []theme.Asset, assetEventFn func(asset theme.Asset) themekit.SimpleAssetEvent) {
+		for _, asset := range assets {
+			assetsActions[asset.Key] = assetEventFn(asset)
 		}
 	}
+	generateActions(remoteAssets, themekit.NewRemovalEvent)
+	generateActions(localAssets, themekit.NewUploadEvent)
+	go func() {
+		for _, event := range assetsActions {
+			events <- event
+		}
+		close(events)
+	}()
+
+}
+
+func prepareChannel(options ReplaceOptions) (rawEvents, throttledEvents chan themekit.AssetEvent) {
+	rawEvents = make(chan themekit.AssetEvent)
+	if options.Bucket == nil {
+		return rawEvents, rawEvents
+	}
+
+	foreman := themekit.NewForeman(options.Bucket)
+	foreman.JobQueue = rawEvents
+	foreman.WorkerQueue = make(chan themekit.AssetEvent)
+	foreman.IssueWork()
+	return foreman.JobQueue, foreman.WorkerQueue
 }

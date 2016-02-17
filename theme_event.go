@@ -1,4 +1,4 @@
-package phoenix
+package themekit
 
 import (
 	"encoding/json"
@@ -7,6 +7,8 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strings"
+
+	"github.com/Shopify/themekit/theme"
 )
 
 // Using a 500 Error Code is disingenuous since
@@ -21,13 +23,32 @@ type ThemeEvent interface {
 	AsJSON() ([]byte, error)
 }
 
+type NoOpEvent struct {
+}
+
+func (e NoOpEvent) String() string {
+	return ""
+}
+
+func (e NoOpEvent) Successful() bool {
+	return false
+}
+
+func (e NoOpEvent) Error() error {
+	return nil
+}
+
+func (e NoOpEvent) AsJSON() ([]byte, error) {
+	return []byte{}, errors.New("cannot encode NoOpEvents")
+}
+
 type APIAssetEvent struct {
 	Host      string `json:"host"`
 	AssetKey  string `json:"asset_key"`
 	EventType string `json:"event_type"`
 	Code      int    `json:"status_code"`
-	err       error  `json:"error,omitempty"`
-	etype     string `json:"type"`
+	err       error  `json:"error,omitempty"` // TODO: err is unexported; json binding is not going to work
+	etype     string `json:"type"`            // TODO: same here, unexported, no json binding
 }
 
 func NewAPIAssetEvent(r *http.Response, e AssetEvent, err error) APIAssetEvent {
@@ -61,6 +82,18 @@ func (a APIAssetEvent) String() string {
 		)
 	} else if a.Code == 422 {
 		return RedText(fmt.Sprintf("Could not upload %s:\n\t%s", a.AssetKey, a.err))
+	} else if a.Code == 403 {
+		return fmt.Sprintf(
+			"[%s]Cannot remove files that would make a theme invalid. %s",
+			RedText(fmt.Sprintf("%d", a.Code)),
+			BlueText(a.AssetKey),
+		)
+	} else if a.Code == 404 {
+		return fmt.Sprintf(
+			"[%s]Could not complete operation because %s does not exist",
+			RedText(fmt.Sprintf("%d", a.Code)),
+			BlueText(a.AssetKey),
+		)
 	} else {
 		return fmt.Sprintf(
 			"[%s]Could not perform %s to %s at %s\n\t%s",
@@ -74,7 +107,7 @@ func (a APIAssetEvent) String() string {
 }
 
 func (a APIAssetEvent) Successful() bool {
-	return a.Code >= 200 && a.Code <= 300
+	return a.Code >= 200 && a.Code < 300
 }
 
 func (a APIAssetEvent) Error() error {
@@ -154,7 +187,7 @@ func (t *APIThemeEvent) markIfHasError(err error) bool {
 }
 
 func populateThemeData(e *APIThemeEvent, r *http.Response) {
-	var container map[string]Theme
+	var container map[string]theme.Theme
 	bytes, err := ioutil.ReadAll(r.Body)
 	if e.markIfHasError(err) {
 		return

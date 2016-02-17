@@ -2,7 +2,8 @@ package commands
 
 import (
 	"fmt"
-	"github.com/csaunders/phoenix"
+	"github.com/Shopify/themekit"
+	"github.com/Shopify/themekit/theme"
 	"os"
 )
 
@@ -20,15 +21,15 @@ func RemoveCommand(args map[string]interface{}) chan bool {
 }
 
 func Remove(options RemoveOptions) chan bool {
-	events := make(chan phoenix.AssetEvent)
+	events := make(chan themekit.AssetEvent)
 	done, logs := options.Client.Process(events)
 
-	mergeEvents(options.getEventLog(), []chan phoenix.ThemeEvent{logs})
+	mergeEvents(options.getEventLog(), []chan themekit.ThemeEvent{logs})
 
 	go func() {
 		for _, filename := range options.Filenames {
-			asset := phoenix.Asset{Key: filename}
-			events <- phoenix.NewRemovalEvent(asset)
+			asset := theme.Asset{Key: filename}
+			events <- themekit.NewRemovalEvent(asset)
 			removeFile(filename)
 		}
 		close(events)

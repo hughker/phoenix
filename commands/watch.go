@@ -2,50 +2,81 @@ package commands
 
 import (
 	"fmt"
-	"github.com/csaunders/phoenix"
 	"os"
+	"time"
+
+	"github.com/Shopify/themekit"
 )
 
 type WatchOptions struct {
 	BasicOptions
-	Directory string
+	Directory  string
+	NotifyFile string
+	Clients    []themekit.ThemeClient
 }
 
 func WatchCommand(args map[string]interface{}) chan bool {
 	currentDir, _ := os.Getwd()
 
 	options := WatchOptions{Directory: currentDir}
+	options.Clients = extractThemeClients(args)
 	extractThemeClient(&options.Client, args)
 	extractEventLog(&options.EventLog, args)
 	extractString(&options.Directory, "directory", args)
+	extractString(&options.NotifyFile, "notifyFile", args)
 
 	return Watch(options)
 }
 
+func isSingleEnvironment(options WatchOptions) bool {
+	return len(options.Clients) == 0
+}
+
 func Watch(options WatchOptions) chan bool {
+	if isSingleEnvironment(options) {
+		options.Clients = []themekit.ThemeClient{options.Client}
+	}
+
 	done := make(chan bool)
 	eventLog := options.getEventLog()
-	client := options.Client
 
-	config := client.GetConfiguration()
+	for _, client := range options.Clients {
+		config := client.GetConfiguration()
+		concurrency := config.Concurrency
+		logEvent(message(fmt.Sprintf("Spawning %d workers for %s", concurrency, config.Domain)), eventLog)
 
-	bucket := phoenix.NewLeakyBucket(config.BucketSize, config.RefillRate, 1)
-	bucket.TopUp()
-	foreman := phoenix.NewForeman(bucket)
-	watcher := constructFileWatcher(options.Directory, config)
-	foreman.JobQueue = watcher
-	foreman.IssueWork()
-
-	logEvent(message(fmt.Sprintf("Spawning %d workers", config.Concurrency)), eventLog)
-	for i := 0; i < config.Concurrency; i++ {
-		go spawnWorker(i, foreman.WorkerQueue, client, eventLog)
+		options.Client = client
+		watchForChangesAndIssueWork(options, eventLog)
 	}
 
 	return done
 }
 
-func spawnWorker(workerId int, queue chan phoenix.AssetEvent, client phoenix.ThemeClient, eventLog chan phoenix.ThemeEvent) {
-	logEvent(workerSpawnEvent(workerId), eventLog)
+func watchForChangesAndIssueWork(options WatchOptions, eventLog chan themekit.ThemeEvent) {
+	client := options.Client
+	config := client.GetConfiguration()
+	bucket := client.LeakyBucket()
+	bucket.TopUp()
+
+	foreman := themekit.NewForeman(bucket)
+	foreman.OnIdle = func() {
+		if len(options.NotifyFile) > 0 {
+			os.Create(options.NotifyFile)
+			os.Chtimes(options.NotifyFile, time.Now(), time.Now())
+		}
+	}
+	watcher := constructFileWatcher(options.Directory, config)
+	foreman.JobQueue = watcher
+	foreman.IssueWork()
+
+	for i := 0; i < config.Concurrency; i++ {
+		workerName := fmt.Sprintf("%s Worker #%d", config.Domain, i)
+		go spawnWorker(workerName, foreman.WorkerQueue, client, eventLog)
+	}
+}
+
+func spawnWorker(workerName string, queue chan themekit.AssetEvent, client themekit.ThemeClient, eventLog chan themekit.ThemeEvent) {
+	logEvent(workerSpawnEvent(workerName), eventLog)
 	for {
 		asset := <-queue
 		if asset.Asset().IsValid() {
@@ -57,8 +88,8 @@ func spawnWorker(workerId int, queue chan phoenix.AssetEvent, client phoenix.The
 				Formatter: func(b basicEvent) string {
 					return fmt.Sprintf(
 						"Received %s event on %s",
-						phoenix.GreenText(b.EventType),
-						phoenix.BlueText(b.Target),
+						themekit.GreenText(b.EventType),
+						themekit.BlueText(b.Target),
 					)
 				},
 			}
@@ -68,19 +99,23 @@ func spawnWorker(workerId int, queue chan phoenix.AssetEvent, client phoenix.The
 	}
 }
 
-func constructFileWatcher(dir string, config phoenix.Configuration) chan phoenix.AssetEvent {
-	filter := phoenix.NewEventFilterFromPatternsAndFiles(config.IgnoredFiles, config.Ignores)
-	return phoenix.NewFileWatcher(dir, true, filter)
+func constructFileWatcher(dir string, config themekit.Configuration) chan themekit.AssetEvent {
+	filter := themekit.NewEventFilterFromPatternsAndFiles(config.IgnoredFiles, config.Ignores)
+	watcher, err := themekit.NewFileWatcher(dir, true, filter)
+	if err != nil {
+		themekit.NotifyError(err)
+	}
+	return watcher
 }
 
-func workerSpawnEvent(workerId int) phoenix.ThemeEvent {
+func workerSpawnEvent(workerName string) themekit.ThemeEvent {
 	return basicEvent{
 		Title:     "Worker",
-		Target:    fmt.Sprintf("%d", workerId),
+		Target:    workerName,
 		etype:     "basicEvent",
 		EventType: "worker",
 		Formatter: func(b basicEvent) string {
-			return fmt.Sprintf("%s #%s ready to upload local changes", b.Title, b.Target)
+			return fmt.Sprintf("%s ready to upload local changes", b.Target)
 		},
 	}
 }
